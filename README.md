@@ -7,7 +7,11 @@ can still be played in a modern browser – natively, without Flash or any Flash
 
 ## Playing
 
-You need Python 3 (already installed on most Linux systems) and any modern browser.
+**Online:** <https://m1omg.github.io/SweatshopHTML5/> (the enhanced copy from
+`sweatshop-enhanced/`) or <https://m1omg.github.io/SweatshopHTML5/original/> (this 1:1 port).
+
+To play from your own computer you need Python 3 (already installed on most Linux systems)
+and any modern browser.
 
 ```
 python3 play.py
