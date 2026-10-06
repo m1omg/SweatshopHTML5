@@ -1,0 +1,6 @@
+# outputs of tools/build.py (see README)
+/build/
+/tools/ffdec/
+/sweatshop-enhanced/build/
+/sweatshop-enhanced/tools/ffdec/
+__pycache__/

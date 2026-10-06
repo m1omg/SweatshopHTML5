@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sweatshop</title>
+<style>
+  @font-face { font-family: "SweatshopVAG"; src: url("assets/fonts/VAGRounded.woff") format("woff"); }
+  :root { --bg: #000; --fg: #ddd; --muted: #888; --accent: #e8b020; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; }
+  #stage { display: block; outline: none; touch-action: none; image-rendering: auto; }
+  #loader { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 16px; background: var(--bg); z-index: 5; padding: 16px; text-align: center; }
+  #loader h1 { margin: 0; font: 46px "SweatshopVAG", system-ui, sans-serif; letter-spacing: 2px; color: #e8423c; }
+  #progress { width: min(360px, 80vw); height: 10px; border: 1px solid #444; border-radius: 5px; overflow: hidden; }
+  #bar { width: 0; height: 100%; background: var(--accent); transition: width .15s; }
+  #status { color: var(--muted); min-height: 1.2em; }
+  #start { display: none; font: 22px "SweatshopVAG", system-ui, sans-serif; padding: 10px 32px; border-radius: 6px; border: 0;
+    background: var(--accent); color: #000; cursor: pointer; }
+  #start:hover { filter: brightness(1.1); }
+  #error { display: none; position: fixed; left: 8px; right: 8px; bottom: 8px; max-height: 40vh; overflow: auto;
+    background: #300; color: #fcc; border: 1px solid #a33; padding: 8px; font: 12px/1.4 monospace; white-space: pre-wrap; z-index: 10; }
+  body.fixed-scale #wrap { justify-content: flex-start; align-items: flex-start; }
+  body.fixed-scale footer { display: none; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; padding: 4px 16px 6px; }
+  footer a { color: var(--muted); }
+  .flash-input { display: none; position: absolute; z-index: 4; margin: 0; padding: 0 2px; border: 0;
+    background: transparent; outline: none; caret-color: currentColor; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="stage" tabindex="0" width="700" height="545"></canvas></div>
+<footer>Sweatshop (2011) by <b>Littleloud</b> for Channel 4 Education. All credit to the original creators. HTML5 port of the original Flash game.</footer>
+<div id="loader">
+  <h1>SWEATSHOP</h1>
+  <div id="progress"><div id="bar"></div></div>
+  <div id="status">Loading…</div>
+  <button id="start" type="button">Click to play</button>
+</div>
+<div id="error"></div>
+<script src="js/runtime.js"></script>
+<script src="js/flash_core.js"></script>
+<script src="js/xml.js"></script>
+<script src="js/flash_display.js"></script>
+<script src="js/flash_text.js"></script>
+<script src="js/flash_media.js"></script>
+<script src="js/flash_render.js"></script>
+<script src="js/game.js"></script>
+<script src="js/patches.js"></script>
+<script src="js/player.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

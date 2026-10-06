@@ -1,0 +1,16 @@
+{
+	"title":		["help"],
+	"select":		["help", "player", "player_hi", "menu"],
+	"game":			["help", "player", "player_hi","pause"],
+	"results":		["help", "player", "player_hi"],
+	"client":		["skip"],			
+	"movie":		["skip"],			
+	"outro":		["skip"],			
+	"level_end":	[],			
+	"help":			["back"],
+	"credits":		["back"],
+	"end_credits":	["skip"],
+	"player":		["back"],
+	"outro":		[],
+	"end":			["skip"]
+}

@@ -1,0 +1,30 @@
+<menu>
+	
+	<icon type="child" 			key="child_1" 			category="worker" resname="entity.child" 		/>
+	<icon type="hat_maker" 		key="hat_maker_1"		category="worker" resname="entity.hat_maker" 		/>
+	<icon type="shirt_maker" 	key="shirt_maker_1"		category="worker" resname="entity.shirt_maker" 	/>
+	<icon type="bag_maker" 		key="bag_maker_1"		category="worker" resname="entity.bag_maker" 		/>
+	<icon type="shoe_maker" 	key="shoe_maker_1"		category="worker" resname="entity.shoe_maker" 		/>
+		
+	<menu type="_special" resname="hud.special">
+		<icon type="packer" 		key="packer_1" 			category="worker" resname="entity.packer"			/>
+		<icon type="engineer" 		key="engineer_1"		category="officer" resname="entity.engineer"		/>
+		<icon type="fire_officer" 	key="fire_officer_1" 	category="officer" resname="entity.fire_officer"	/>
+		<icon type="superstar" 		key="superstar_1" 		category="worker" resname="entity.superstar"		/>
+	</menu>
+	
+	<menu type="_features" resname="hud.features">
+		<icon type="water" 		key="water" 	category="feature" resname="entity.water" 	effect="entity.water.effect" 	color="cyan"  	 />
+		<icon type="fan"		key="fan" 		category="feature" resname="entity.fan" 	effect="entity.fan.effect"		color="yellow"	 />
+		<icon type="radio"		key="radio" 	category="feature" resname="entity.radio"	effect="entity.radio.effect"	color="orange"	 />
+		
+		<icon type="cola" 		key="cola"	 	category="feature" resname="entity.cola"	effect="entity.cola.effect"		color="cyan"	 />
+		<icon type="toilet"		key="toilet" 	category="feature" resname="entity.toilet"	effect="entity.toilet.effect"	color="yellow"	 />
+		<icon type="sign"		key="sign" 		category="feature" resname="entity.sign"	effect="entity.sign.effect"		color="orange"	 />
+		
+		<icon type="juice"		key="juice" 	category="feature" resname="entity.juice"	effect="entity.juice.effect"	color="cyan"	 />
+		<icon type="heater"		key="heater" 	category="feature" resname="entity.heater"	effect="entity.heater.effect"	color="yellow"	/>
+		<icon type="tannoy"		key="tannoy" 	category="feature" resname="entity.tannoy"	effect="entity.tannoy.effect"	color="orange"	 />
+	</menu>
+	
+</menu>
