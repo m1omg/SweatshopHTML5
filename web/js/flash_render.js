@@ -311,7 +311,7 @@ function $recolor(src, cx, owner) {
   const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
   const c = (e && e.canvas) || document.createElement('canvas');
   c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
+  const ctx = c.getContext('2d', { willReadFrequently: true }); // read back below: keep it off the GPU
   ctx.clearRect(0, 0, w, h);
   ctx.drawImage(src, 0, 0);
   const id = ctx.getImageData(0, 0, w, h);
@@ -333,8 +333,9 @@ const $gradCache = new WeakMap();
 const $gradPathCache = new WeakMap();
 const $layerPool = [];
 let $cacheEnabled = true;
-// Bitmap-cache bookkeeping: a memory budget (Chrome blanks the page for a moment when a page
-// holds too much canvas memory) and an epoch bumped when the browser discards canvases.
+// Bitmap-cache bookkeeping: bitmaps that are no longer drawn are freed (browsers can blank the
+// page for a moment when it holds too much canvas memory), and an epoch is bumped when the
+// browser discards canvases.
 const $cachedObjs = new Set();
 let $cacheEpoch = 0;
 function $newCanvas(w, h) {
@@ -359,7 +360,6 @@ function $dropCache(obj) {
   if (c && c.canvas) $freeCanvas(c.canvas);
 }
 function $enforceCacheBudget(newObj) {
-  const budgetPx = Math.max(4000000, 5 * $mainPixels());
   const frame = $player.frameCount;
   let total = 0;
   for (const o of $cachedObjs) {
@@ -368,22 +368,73 @@ function $enforceCacheBudget(newObj) {
     if (o !== newObj && frame - o.$cache.lastUsed > 75) { $dropCache(o); continue; }
     total += o.$cache.canvas.width * o.$cache.canvas.height;
   }
-  // (filtered / layer-blended objects are always kept: they need the bitmap anyway, and
-  // re-applying their filters every frame is far more expensive than the memory)
-  if (total > budgetPx && newObj.$cache && !newObj.$filters && newObj.$blend !== 'layer') {
-    // budget full: don't keep this one (its bitmap is still drawn this frame by the caller,
-    // then recycled); it is drawn directly from now on - no evict / rebuild cycles
-    newObj.$cache = null;
-    $cachedObjs.delete(newObj);
-    newObj.$noCacheUntil = frame + 1500;
+  // Safety net, well above what any screen of the game needs: free the least recently drawn
+  // bitmaps. (Refusing to cache visible objects instead makes them redraw shape by shape every
+  // frame, which is far slower.)
+  const capPx = Math.max(16000000, 12 * $mainPixels());
+  if (total <= capPx) return;
+  const old = Array.from($cachedObjs).filter((o) => o !== newObj && frame - o.$cache.lastUsed > 1);
+  old.sort((x, y) => x.$cache.lastUsed - y.$cache.lastUsed);
+  for (const o of old) {
+    if (total <= capPx * 0.8) break;
+    total -= o.$cache.canvas.width * o.$cache.canvas.height;
+    $dropCache(o);
   }
 }
+
+// Blend modes that make Firefox's GPU canvas fall back to software rendering - for every later
+// draw on that canvas too, for a few seconds. On the stage they are applied by the page
+// compositor instead (CSS mix-blend-mode, see P.toLayer); multiply, screen and add are fine.
+const $LAYER_BLEND = {
+  overlay: 'overlay', hardlight: 'hard-light', darken: 'darken', lighten: 'lighten',
+  difference: 'difference', subtract: 'difference', invert: 'difference',
+};
+
+// Extra canvases stacked over the stage canvas, inside an isolated box (see $startPlayer).
+function $StageLayers(base) {
+  this.base = base;
+  this.list = [];
+  this.used = 0;
+}
+// the next layer of this frame, cleared, with the given CSS blend mode
+$StageLayers.prototype.next = function (css) {
+  const base = this.base;
+  let c = this.list[this.used++];
+  if (!c) {
+    c = document.createElement('canvas');
+    c.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none';
+    base.parentElement.appendChild(c);
+    this.list.push(c);
+  }
+  if (c.width !== base.width || c.height !== base.height) {
+    c.width = base.width;
+    c.height = base.height;
+  }
+  if (c.style.width !== base.style.width) c.style.width = base.style.width;
+  if (c.style.height !== base.style.height) c.style.height = base.style.height;
+  if (c.style.mixBlendMode !== css) c.style.mixBlendMode = css;
+  if (c.style.display) c.style.display = '';
+  const ctx = c.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, c.width, c.height);
+  return ctx;
+};
+// end of a frame: hide the layers it didn't use
+$StageLayers.prototype.finish = function () {
+  for (let i = this.used; i < this.list.length; i++) {
+    if (this.list[i].style.display !== 'none') this.list[i].style.display = 'none';
+  }
+  this.used = 0;
+};
 
 function $Renderer(ctx, scale, offX = 0, offY = 0) {
   this.ctx = ctx;
   this.S = scale;
   this.ox = offX;
   this.oy = offY;
+  this.layers = null; // $StageLayers when drawing the stage
+  this.layerLock = 0; // > 0: stay on the current layer
+  this.clips = []; // active clip paths (stage coordinates)
 }
 
 (function (P) {
@@ -394,7 +445,8 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
 
   // isRoot: render obj with matrix pm as-is (used for BitmapData.draw and layer building).
   // noFx: skip obj's own filters / blend mode / mask (they are applied by renderComposite).
-  P.renderObject = function (obj, pm, pcx, isRoot, noFx) {
+  // blendDone: obj's blend mode is already applied by the layer it is drawn on.
+  P.renderObject = function (obj, pm, pcx, isRoot, noFx, blendDone) {
     if (!isRoot) {
       if (!obj.$visible || obj.$maskOf || obj.$isClipMask) return;
     }
@@ -403,37 +455,29 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
     if (cx && cx[3] <= 0 && cx[7] <= 0) return;
     let blendOp = null;
     if (!noFx) {
+      const blend = blendDone ? null : obj.$blend;
+      const cssBlend = blend && this.layers && !this.layerLock ? $LAYER_BLEND[blend] : null;
+      if (cssBlend) {
+        this.toLayer(cssBlend);
+        this.layerLock++;
+        try {
+          this.renderObject(obj, pm, pcx, isRoot, noFx, true);
+        } finally {
+          this.layerLock--;
+          this.toLayer('normal');
+        }
+        return;
+      }
       const hasFilters = obj.$filters && obj.$filters.length;
-      const blend = obj.$blend;
       const special = blend && blend !== 'normal' && blend !== 'layer';
       const layerAlpha = blend === 'layer' && cx && cx[3] < 0.999;
-      // Bitmaps (cacheAsBitmap, or the flattened group of a faded "layer") are only worth it
-      // for content that stays unchanged: objects that were just created or changed are drawn
-      // directly until they have been stable for a few frames.
-      let cab = obj.cacheAsBitmap && !isRoot && $cacheEnabled;
-      let group = layerAlpha;
-      if (cab) {
-        // simple objects (a single shape, a rain drop...) are cheaper to draw than to cache
-        if (obj.$costChg !== obj.$chg) {
-          obj.$costChg = obj.$chg;
-          obj.$cost = $drawCost(obj, 60);
-        }
-        if (obj.$cost < 6) cab = false;
-      }
-      if (cab || group) {
-        if (obj.$seenChg !== obj.$chg) {
-          obj.$seenChg = obj.$chg;
-          obj.$stableSince = $player.frameCount;
-        }
-        if ($player.frameCount - obj.$stableSince < 3 && !obj.$cache) cab = group = false;
-      }
-      // blend modes (overlay, screen...) are applied while drawing, without an offscreen bitmap
-      if (special) blendOp = $COMPOSITE[blend] || null;
-      if (hasFilters || cab || group) {
+      const cab = obj.cacheAsBitmap && !isRoot && $cacheEnabled;
+      // Other blend modes are applied to the object's flattened bitmap, once, as in Flash.
+      if (hasFilters || special || layerAlpha || cab) {
         // objects that animate every frame skip the offscreen bitmap (see renderComposite)
         const direct = !hasFilters && obj.$noCacheUntil > $player.frameCount;
-        const keepIt = !isRoot && $cacheEnabled && !(obj.$noCacheUntil > $player.frameCount);
-        if (!direct && this.renderComposite(obj, m, cx, keepIt)) return;
+        if (!direct && this.renderComposite(obj, m, cx, !isRoot && $cacheEnabled, blendDone)) return;
+        if (special) blendOp = $COMPOSITE[blend] || null;
       }
     }
     const ctx = this.ctx;
@@ -442,6 +486,7 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
     if (blendOp) {
       ctx.save();
       ctx.globalCompositeOperation = blendOp;
+      this.layerLock++;
     }
     obj.$draw(this, m, cx);
     const ch = obj.$children;
@@ -449,44 +494,65 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
       if (obj.$hasClips) this.renderClippedChildren(obj, m, cx);
       else for (let i = 0; i < ch.length; i++) this.renderObject(ch[i], m, cx, false);
     }
-    if (blendOp) ctx.restore();
-    if (clipped) ctx.restore();
+    if (blendOp) {
+      this.layerLock--;
+      ctx.restore();
+    }
+    if (clipped) this.popClip();
   };
 
-  P.clipToMask = function (mk) {
+  // Continue on a new stage layer (css: its CSS blend mode), carrying the active clips over.
+  P.toLayer = function (css) {
+    for (let i = 0; i < this.clips.length; i++) this.ctx.restore();
+    const ctx = this.ctx = this.layers.next(css);
+    for (const path of this.clips) {
+      ctx.save();
+      ctx.setTransform(this.S, 0, 0, this.S, this.ox, this.oy);
+      ctx.clip(path, 'nonzero');
+    }
+  };
+
+  P.pushClip = function (path) {
     const ctx = this.ctx;
-    const mm = mk.$parent ? mk.$globalMatrix() : mk.$m;
-    const path = new Path2D();
-    this.collectClip(mk, mm, path, true);
     ctx.save();
     ctx.setTransform(this.S, 0, 0, this.S, this.ox, this.oy);
     ctx.clip(path, 'nonzero');
+    this.clips.push(path);
+  };
+
+  P.popClip = function () {
+    this.clips.pop();
+    this.ctx.restore();
+  };
+
+  P.clipToMask = function (mk) {
+    const mm = mk.$parent ? mk.$globalMatrix() : mk.$m;
+    const path = new Path2D();
+    this.collectClip(mk, mm, path, true);
+    this.pushClip(path);
     return true;
   };
 
   P.renderClippedChildren = function (obj, m, cx) {
-    const ctx = this.ctx;
     const ch = obj.$children.slice();
     let activeClip = 0; // clip depth limit
     for (let i = 0; i < ch.length; i++) {
       const c = ch[i];
       if (activeClip && (c.$depth === null || c.$depth > activeClip)) {
-        ctx.restore();
+        this.popClip();
         activeClip = 0;
       }
       if (c.$isClipMask) {
-        if (activeClip) { ctx.restore(); activeClip = 0; }
+        if (activeClip) { this.popClip(); activeClip = 0; }
         const path = new Path2D();
         this.collectClip(c, $mul(c.$m, m), path, true);
-        ctx.save();
-        ctx.setTransform(this.S, 0, 0, this.S, this.ox, this.oy);
-        ctx.clip(path, 'nonzero');
+        this.pushClip(path);
         activeClip = c.$clipDepth;
         continue;
       }
       this.renderObject(c, m, cx, false);
     }
-    if (activeClip) ctx.restore();
+    if (activeClip) this.popClip();
   };
 
   // Accumulate the fill area of obj (global matrix m) into path (in stage coordinates)
@@ -641,10 +707,10 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
   // Render obj into an offscreen bitmap, apply its filters and composite it with its blend
   // mode. With useCache the bitmap is kept (like Flash's cacheAsBitmap) and reused until
   // something inside obj changes or it is scaled / rotated / recoloured.
-  P.renderComposite = function (obj, m, cx, useCache) {
+  P.renderComposite = function (obj, m, cx, useCache, noBlend) {
     const S = this.S;
     const filters = obj.$filters && obj.$filters.length ? obj.$filters : null;
-    const rawBlend = obj.$blend && obj.$blend !== 'normal' ? obj.$blend : null;
+    const rawBlend = !noBlend && obj.$blend && obj.$blend !== 'normal' ? obj.$blend : null;
     const blend = rawBlend && rawBlend !== 'layer' ? rawBlend : null;
     // Colour transforms of a filtered (or layer-blended) object apply to the finished bitmap,
     // e.g. fading an object also fades its drop shadow. Alpha-only transforms are applied when
@@ -685,30 +751,21 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
       if (useCache) {
         c.lastUsed = $player.frameCount;
         $cachedObjs.add(obj);
-        // a big bitmap of a simple object costs more memory than it saves drawing time (the
-        // count stops once the object is complex enough, so busy backgrounds stay cached)
-        const area = c.w * c.h;
-        if (!filters && !rawBlend && obj.$cost !== undefined && area > obj.$cost * 60000 &&
-            $drawCost(obj, Math.ceil(area / 60000) + 1) * 60000 < area) {
-          obj.$cache = null;
-          $cachedObjs.delete(obj);
-          obj.$noCacheUntil = $player.frameCount + 1500;
-        } else {
-          $enforceCacheBudget(obj);
-        }
+        $enforceCacheBudget(obj);
       }
     }
     if (c.empty) return true;
     if (useCache) c.lastUsed = $player.frameCount;
     const ctx = this.ctx;
+    const clipped = obj.$mask ? this.clipToMask(obj.$mask) : false;
     ctx.save();
-    if (obj.$mask) this.clipToMask(obj.$mask);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (blend) ctx.globalCompositeOperation = $COMPOSITE[blend] || 'source-over';
     if (alpha !== 1) ctx.globalAlpha = alpha;
     const dx = Math.round((m[4] - c.tx) * S), dy = Math.round((m[5] - c.ty) * S);
     ctx.drawImage(c.canvas, 0, 0, c.w, c.h, c.gx + dx + this.ox, c.gy + dy + this.oy, c.w, c.h);
     ctx.restore();
+    if (clipped) this.popClip();
     if (obj.$cache !== c) $releaseLayer(c.canvas);
     return true;
   };
@@ -727,7 +784,9 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
     const gx = Math.floor((b[0] - pad) * S), gy = Math.floor((b[1] - pad) * S);
     const w = Math.ceil((b[2] + pad) * S) - gx, h = Math.ceil((b[3] + pad) * S) - gy;
     if (w <= 0 || h <= 0 || w * h > 4096 * 4096) return null;
-    let img = $getLayer(w, h);
+    // without filters, render straight into the object's bitmap - no scratch copy
+    const direct = keep && !filters && !postCx;
+    let img = direct ? $cacheCanvas(reuse, w, h) : $getLayer(w, h);
     const lctx = img.getContext('2d');
     lctx.setTransform(1, 0, 0, 1, 0, 0);
     lctx.clearRect(0, 0, w, h);
@@ -744,13 +803,8 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
     if (postCx) $colorTransformCanvas(img, w, h, postCx);
     // the result: kept by the object when caching, otherwise a pooled canvas
     let out = img;
-    if (keep) {
-      // reuse the object's previous bitmap; grow it if needed instead of allocating a new canvas
-      out = reuse || $takePooled(w, h) || $newCanvas(w, h);
-      if (out.width < w || out.height < h) {
-        out.width = Math.max(out.width, w);
-        out.height = Math.max(out.height, h);
-      }
+    if (keep && !direct) {
+      out = $cacheCanvas(reuse, w, h);
       const octx = out.getContext('2d');
       octx.setTransform(1, 0, 0, 1, 0, 0);
       octx.clearRect(0, 0, w, h);
@@ -789,19 +843,17 @@ function $releaseLayer(c) {
   if ($layerPool.length < 8 && px + c.width * c.height <= 2 * $mainPixels()) $layerPool.push(c);
   else $freeCanvas(c);
 }
-// a pooled canvas that already fits, or null
-// number of drawing primitives in a subtree (stops counting at limit)
-function $drawCost(o, limit) {
-  let n = 0;
-  (function walk(x) {
-    if (n >= limit || !x.$visible) return;
-    if (x instanceof $SymbolShape || x instanceof $MorphShape) n += Math.max(1, Math.ceil(x.$def.d.length / 4));
-    else if (x instanceof $StaticText || x instanceof flash_text_TextField || x instanceof flash_display_Bitmap) n += 2;
-    else if (x.$graphics && x.$graphics.$cmds.length) n += 1;
-    if (x.$children) for (let i = 0; i < x.$children.length && n < limit; i++) walk(x.$children[i]);
-  })(o);
-  return n;
+// the canvas for an object's bitmap: its previous one or a pooled one (grown if needed rather
+// than allocating another canvas), else a new one
+function $cacheCanvas(reuse, w, h) {
+  const c = reuse || $takePooled(w, h) || $newCanvas(w, h);
+  if (c.width < w || c.height < h) {
+    c.width = Math.max(c.width, w);
+    c.height = Math.max(c.height, h);
+  }
+  return c;
 }
+// a pooled canvas that already fits, or null
 function $takePooled(w, h) {
   for (let i = 0; i < $layerPool.length; i++) {
     const c = $layerPool[i];
@@ -855,7 +907,7 @@ function $tmpCanvas(w, h) {
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
   if ('filter' in ctx) ctx.filter = 'none';
-  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.clearRect(0, 0, w, h); // pooled canvases can be larger; only w x h is used
   return c;
 }
 function $rgbaCss(color, alpha) {

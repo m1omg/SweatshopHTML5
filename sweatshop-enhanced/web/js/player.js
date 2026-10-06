@@ -15,12 +15,21 @@ const $player = {
   editing: null,
   frameCount: 0,
   errors: 0,
+  box: null, // holds the stage canvas and its layers
+  layers: null, // $StageLayers
 };
 
 function $startPlayer(canvas, stage) {
   $player.canvas = canvas;
   $player.ctx = canvas.getContext('2d');
   $player.stage = stage;
+  // the stage canvas and its blend layers ($StageLayers) share a box and blend only with each other
+  const box = document.createElement('div');
+  box.style.cssText = 'position:relative;isolation:isolate;line-height:0';
+  canvas.parentNode.insertBefore(box, canvas);
+  box.appendChild(canvas);
+  $player.box = box;
+  $player.layers = new $StageLayers(canvas);
   $resizeCanvas();
   window.addEventListener('resize', $resizeCanvas);
   $installInput(canvas);
@@ -102,18 +111,20 @@ function $render() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, c.width, c.height);
   const r = new $Renderer(ctx, $player.scale);
+  r.layers = $player.layers;
   try {
     r.renderObject($player.stage, $ID, null, false);
   } catch (e) {
     $reportError(e);
-    ctx.restore();
+    r.ctx.restore();
   }
+  $player.layers.finish();
 }
 
 function $resizeCanvas() {
   const c = $player.canvas;
   const W = $player.stage.stageWidth, H = $player.stage.stageHeight;
-  const wrap = c.parentElement;
+  const wrap = $player.box.parentElement;
   const availW = wrap.clientWidth, availH = wrap.clientHeight;
   // ?scale=N renders at a fixed scale in the top-left corner (used for pixel comparisons)
   const fixed = parseFloat($flags.scale);
