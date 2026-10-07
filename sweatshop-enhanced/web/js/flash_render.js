@@ -342,8 +342,16 @@ function $newCanvas(w, h) {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
+  // The browser can take a canvas's GPU memory away (on phones when switching apps): it is wiped,
+  // and restored blank later. Rebuild the bitmaps both times (freed canvases don't count).
   c.addEventListener('contextlost', () => { $cacheEpoch++; });
+  c.addEventListener('contextrestored', () => { if (c.width) $cacheEpoch++; });
   return c;
+}
+// true while a canvas has lost its GPU memory - drawing on it does nothing then
+function $isLost(c) {
+  const ctx = c.getContext('2d');
+  return !ctx || (ctx.isContextLost ? ctx.isContextLost() : false);
 }
 function $freeCanvas(c) {
   if (!c) return;
@@ -399,13 +407,16 @@ function $StageLayers(base) {
 // the next layer of this frame, cleared, with the given CSS blend mode
 $StageLayers.prototype.next = function (css) {
   const base = this.base;
-  let c = this.list[this.used++];
-  if (!c) {
-    c = document.createElement('canvas');
-    c.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none';
-    base.parentElement.appendChild(c);
-    this.list.push(c);
+  let c = this.list[this.used];
+  // (a layer that lost its GPU memory is replaced, in place, rather than waiting for the browser)
+  if (!c || $isLost(c)) {
+    const n = document.createElement('canvas');
+    n.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none';
+    if (c) c.replaceWith(n);
+    else base.parentElement.appendChild(n);
+    this.list[this.used] = c = n;
   }
+  this.used++;
   if (c.width !== base.width || c.height !== base.height) {
     c.width = base.width;
     c.height = base.height;
@@ -475,7 +486,7 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
       // Other blend modes are applied to the object's flattened bitmap, once, as in Flash.
       if (hasFilters || special || layerAlpha || cab) {
         // objects that animate every frame skip the offscreen bitmap (see renderComposite)
-        const direct = !hasFilters && obj.$noCacheUntil > $player.frameCount;
+        const direct = (!hasFilters || obj.$tooBig) && obj.$noCacheUntil > $player.frameCount;
         if (!direct && this.renderComposite(obj, m, cx, !isRoot && $cacheEnabled, blendDone)) return;
         if (special) blendOp = $COMPOSITE[blend] || null;
       }
@@ -732,17 +743,31 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
     if (!fresh) {
       if (useCache && c && $player.frameCount - c.frame <= 2) {
         // rebuilt again almost immediately: this object animates, so stop caching it for a while
+        // (longer each time, so endlessly animating screens don't rebuild it every few seconds)
         obj.$thrash = (obj.$thrash || 0) + 1;
         if (obj.$thrash > 3 && !filters) {
-          obj.$noCacheUntil = $player.frameCount + 75;
+          obj.$thrashes = Math.min((obj.$thrashes || 0) + 1, 5);
+          obj.$noCacheUntil = $player.frameCount + (75 << (obj.$thrashes - 1));
           obj.$thrash = 0;
           $dropCache(obj);
           return false;
         }
       } else if (useCache) {
         obj.$thrash = 0;
+        if (c && $player.frameCount - c.frame > 75) obj.$thrashes = 0; // its bitmap lasted
       }
-      c = this.buildComposite(obj, m, contentCx, key, filters, useCache, useCache && c && c.canvas ? c.canvas : null, postCx);
+      // A bitmap far bigger than the screen saves nothing and can exhaust GPU memory (the level
+      // select screen holds all three factories, about 30 Mpx at full screen): objects cached only
+      // for speed are then drawn directly, and so are objects that wouldn't fit a bitmap at all.
+      const maxPx = filters || rawBlend ? 4096 * 4096 : Math.max(2000000, 2 * $mainPixels());
+      c = this.buildComposite(obj, m, contentCx, key, filters, useCache, useCache && c && c.canvas ? c.canvas : null, postCx, maxPx);
+      if (c === $TOO_BIG) {
+        if (useCache) $dropCache(obj);
+        obj.$tooBig = true;
+        obj.$noCacheUntil = $player.frameCount + 250; // (don't work out its bounds every frame)
+        return false;
+      }
+      obj.$tooBig = false;
       if (!c) {
         if (useCache) obj.$cache = { empty: true, key, seq: $seq, filters: obj.$filters, frame: $player.frameCount };
         return true;
@@ -770,7 +795,8 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
     return true;
   };
 
-  P.buildComposite = function (obj, m, cx, key, filters, keep, reuse, postCx) {
+  // Returns the bitmap, null when obj draws nothing, or $TOO_BIG when the bitmap would exceed maxPx.
+  P.buildComposite = function (obj, m, cx, key, filters, keep, reuse, postCx, maxPx) {
     const S = this.S;
     const seq = $seq;
     const b = obj.$bounds(m);
@@ -783,7 +809,8 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
     // device-space rectangle independent of this renderer's offset
     const gx = Math.floor((b[0] - pad) * S), gy = Math.floor((b[1] - pad) * S);
     const w = Math.ceil((b[2] + pad) * S) - gx, h = Math.ceil((b[3] + pad) * S) - gy;
-    if (w <= 0 || h <= 0 || w * h > 4096 * 4096) return null;
+    if (w <= 0 || h <= 0) return null;
+    if (w > 8192 || h > 8192 || w * h > maxPx) return $TOO_BIG;
     // without filters, render straight into the object's bitmap - no scratch copy
     const direct = keep && !filters && !postCx;
     let img = direct ? $cacheCanvas(reuse, w, h) : $getLayer(w, h);
@@ -815,6 +842,8 @@ function $Renderer(ctx, scale, offX = 0, offY = 0) {
   };
 })($Renderer.prototype);
 
+const $TOO_BIG = { tooBig: true };
+
 const $COMPOSITE = {
   multiply: 'multiply', screen: 'screen', lighten: 'lighten', darken: 'darken', difference: 'difference',
   add: 'lighter', subtract: 'difference', invert: 'difference', overlay: 'overlay', hardlight: 'hard-light',
@@ -822,13 +851,8 @@ const $COMPOSITE = {
 };
 
 function $getLayer(w, h) {
-  for (let i = 0; i < $layerPool.length; i++) {
-    const c = $layerPool[i];
-    if (c.width >= w && c.height >= h) {
-      $layerPool.splice(i, 1);
-      return c;
-    }
-  }
+  const fits = $takePooled(w, h);
+  if (fits) return fits;
   // nothing fits: enlarge a pooled canvas rather than allocating another one
   const c = $layerPool.length ? $layerPool.pop() : $newCanvas(64, 64);
   c.width = Math.max(c.width, w, 64);
@@ -846,6 +870,10 @@ function $releaseLayer(c) {
 // the canvas for an object's bitmap: its previous one or a pooled one (grown if needed rather
 // than allocating another canvas), else a new one
 function $cacheCanvas(reuse, w, h) {
+  if (reuse && $isLost(reuse)) {
+    $freeCanvas(reuse);
+    reuse = null;
+  }
   const c = reuse || $takePooled(w, h) || $newCanvas(w, h);
   if (c.width < w || c.height < h) {
     c.width = Math.max(c.width, w);
@@ -853,8 +881,11 @@ function $cacheCanvas(reuse, w, h) {
   }
   return c;
 }
-// a pooled canvas that already fits, or null
+// a pooled canvas that already fits, or null (pooled canvases that lost their GPU memory are freed)
 function $takePooled(w, h) {
+  for (let i = $layerPool.length - 1; i >= 0; i--) {
+    if ($isLost($layerPool[i])) $freeCanvas($layerPool.splice(i, 1)[0]);
+  }
   for (let i = 0; i < $layerPool.length; i++) {
     const c = $layerPool[i];
     if (c.width >= w && c.height >= h) {

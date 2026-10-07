@@ -12,6 +12,7 @@
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   body { display: flex; flex-direction: column; }
   #wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; }
+  html { -webkit-tap-highlight-color: transparent; } /* no blue flash on every tap (Android) */
   #stage { display: block; outline: none; touch-action: none; image-rendering: auto; }
   #loader { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 16px; background: var(--bg); z-index: 5; padding: 16px; text-align: center; }

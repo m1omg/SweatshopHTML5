@@ -564,6 +564,9 @@ function $flushSharedObjects() {
 window.addEventListener('pagehide', $flushSharedObjects);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') $flushSharedObjects(); });
 setInterval($flushSharedObjects, 3000);
+// Ask Chromium-based browsers to keep the saves even when the device runs short of storage (they
+// decide silently; Firefox would ask the user with a pop-up, so it isn't asked).
+if (navigator.userAgentData && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 flash_net_SharedObject.prototype.clear = function () {
   this.data = {};
   try { localStorage.removeItem('so_' + this.$name); } catch (e) { /* ignore */ }

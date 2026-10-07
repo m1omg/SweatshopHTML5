@@ -17,11 +17,10 @@ const $player = {
   errors: 0,
   box: null, // holds the stage canvas and its layers
   layers: null, // $StageLayers
+  lostSince: 0, // when the stage canvas lost its GPU memory (0: it hasn't)
 };
 
 function $startPlayer(canvas, stage) {
-  $player.canvas = canvas;
-  $player.ctx = canvas.getContext('2d');
   $player.stage = stage;
   // the stage canvas and its blend layers ($StageLayers) share a box and blend only with each other
   const box = document.createElement('div');
@@ -30,18 +29,18 @@ function $startPlayer(canvas, stage) {
   box.appendChild(canvas);
   $player.box = box;
   $player.layers = new $StageLayers(canvas);
+  $setStageCanvas(canvas);
   $resizeCanvas();
   window.addEventListener('resize', $resizeCanvas);
-  $installInput(canvas);
-  // If the browser discards the canvas (low graphics memory, GPU reset), drop every cached
-  // bitmap - their contents are gone too - and redraw right away when it comes back.
-  canvas.addEventListener('contextlost', (e) => { e.preventDefault(); $cacheEpoch++; });
-  canvas.addEventListener('contextrestored', () => {
-    $cacheEpoch++;
-    for (const o of Array.from($cachedObjs)) $dropCache(o);
-    $layerPool.length = 0;
-    $render();
+  $installKeyboard();
+  // Some browsers wipe the canvases of a hidden page without any event (Safari): draw everything
+  // from scratch when the page is shown again after a while.
+  let hiddenAt = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') hiddenAt = performance.now();
+    else if (performance.now() - hiddenAt > 1000) $redrawAll();
   });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) $redrawAll(); });
   let next = performance.now();
   function loop(now) {
     requestAnimationFrame(loop);
@@ -60,6 +59,38 @@ function $startPlayer(canvas, stage) {
     }
   }
   requestAnimationFrame(loop);
+}
+
+// Use canvas as the stage canvas: at start, or replacing one the browser couldn't restore.
+function $setStageCanvas(canvas) {
+  $player.canvas = canvas;
+  $player.ctx = canvas.getContext('2d');
+  $player.layers.base = canvas;
+  $player.lostSince = 0;
+  // The browser can take the canvas's GPU memory away (GPU reset; on phones when switching apps)
+  // and restores it blank a moment later - unless the event is cancelled, so it isn't.
+  canvas.addEventListener('contextlost', () => { $cacheEpoch++; });
+  canvas.addEventListener('contextrestored', $redrawAll);
+  $installInput(canvas);
+}
+
+// A stage canvas the browser gave up restoring is replaced by a new one.
+function $replaceStageCanvas() {
+  const old = $player.canvas;
+  const canvas = old.cloneNode(false); // same id, attributes, size and style - no listeners
+  const focused = document.activeElement === old;
+  old.replaceWith(canvas);
+  $setStageCanvas(canvas);
+  if (focused) canvas.focus();
+  $redrawAll();
+}
+
+// Forget every cached bitmap (their canvases may have been wiped) and draw the stage again.
+function $redrawAll() {
+  $cacheEpoch++;
+  for (const o of Array.from($cachedObjs)) $dropCache(o);
+  for (const c of $layerPool.splice(0)) $freeCanvas(c);
+  if ($player.frameCount) $render();
 }
 
 function $reportError(e) {
@@ -105,6 +136,14 @@ function $render() {
   $renderCount++;
   const ctx = $player.ctx;
   const c = $player.canvas;
+  // While the browser restores a lost stage canvas there is nothing to draw on; if it gives up
+  // (Chrome stops trying after about 2 s), replace the canvas.
+  if (ctx.isContextLost && ctx.isContextLost()) {
+    if (!$player.lostSince) $player.lostSince = performance.now();
+    else if (performance.now() - $player.lostSince > 3000) $replaceStageCanvas();
+    return;
+  }
+  $player.lostSince = 0;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
@@ -271,8 +310,9 @@ function $installInput(canvas) {
     $player.stage.dispatchEvent(new flash_events_Event('mouseLeave'));
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+}
 
-  // keyboard
+function $installKeyboard() {
   const keyEvent = (type, e) => {
     if ($player.editing && document.activeElement === $player.input) return; // typing into a text field
     const ke = new flash_events_KeyboardEvent(type, true, false, e.key && e.key.length === 1 ? e.key.charCodeAt(0) : 0, $keyCode(e));
