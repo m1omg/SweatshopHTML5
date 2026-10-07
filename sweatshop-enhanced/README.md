@@ -1,6 +1,6 @@
 # Sweatshop – HTML5 port (enhanced copy)
 
-This is a copy of the 1:1 port (`../sweatshop`) with two improvements, both kept in
+This is a copy of the 1:1 port (`../sweatshop`) with a few improvements, all kept in
 `web/js/enhancements.js` so the translated original game code is untouched:
 
 1. **Skip button from the first play.** The original only let you skip a level's story
@@ -19,6 +19,12 @@ This is a copy of the 1:1 port (`../sweatshop`) with two improvements, both kept
    the top of `web/js/enhancements.js`. When the game is hosted, link previews use
    `web/share.jpg` (for Facebook, change the `og:image` tag in `web/index.html` to the full
    `https://…/share.jpg` address).
+3. **Seven save slots** instead of three, in the same save menu (behind "Play"). Saves from
+   slots 1–3 stay where they were.
+4. **Save files.** "Export" under the game downloads all your saves as a small file; "Import"
+   loads the saves from such a file into the same slots (other slots are left alone, and the
+   game asks before replacing a slot). Use it for backups, or to move your saves to another
+   browser, phone or computer – or between the online and the local copy.
 
 **Sweatshop** (2011) was made by **Littleloud** for **Channel 4 Education**.
 All credit for the game, its design, art, writing, music and code goes to its original
