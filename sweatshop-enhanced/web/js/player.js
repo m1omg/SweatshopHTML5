@@ -41,6 +41,7 @@ function $startPlayer(canvas, stage) {
     else if (performance.now() - hiddenAt > 1000) $redrawAll();
   });
   window.addEventListener('pageshow', (e) => { if (e.persisted) $redrawAll(); });
+  const fpsMeter = $flags.fps ? $fpsMeter() : null;
   let next = performance.now();
   function loop(now) {
     requestAnimationFrame(loop);
@@ -54,11 +55,32 @@ function $startPlayer(canvas, stage) {
       next += interval;
       if (now - next > 250) next = now + interval; // fell behind (tab was hidden): don't fast-forward
       $doFrame();
+      const t = performance.now();
       $render();
+      if (fpsMeter) fpsMeter(performance.now() - t);
       $pauseHiddenVideos();
     }
   }
   requestAnimationFrame(loop);
+}
+
+// ?fps=1: frames per second, and the time it takes to draw a frame, in the top left corner.
+function $fpsMeter() {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;left:4px;top:4px;z-index:30;padding:2px 6px;font:12px/1.4 monospace;' +
+    'color:#7f7;background:rgba(0,0,0,.7);pointer-events:none';
+  document.body.appendChild(el);
+  let frames = 0, drawMs = 0, since = performance.now();
+  return (ms) => {
+    frames++;
+    drawMs += ms;
+    const now = performance.now();
+    if (now - since < 500) return;
+    el.textContent = (frames * 1000 / (now - since)).toFixed(1) + ' fps | draw ' + (drawMs / frames).toFixed(1) + ' ms';
+    frames = 0;
+    drawMs = 0;
+    since = now;
+  };
 }
 
 // Use canvas as the stage canvas: at start, or replacing one the browser couldn't restore.

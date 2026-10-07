@@ -29,7 +29,8 @@ website as-is.)
 * Sharing to Twitter opens a tweet in a new tab; the Facebook app and the analytics the
   original used no longer exist, so those parts do nothing.
 * Optional URL parameters: `?level=N` jumps straight into level N (the original developers'
-  single-level mode), `?debug=1` prints the game's internal log to the browser console.
+  single-level mode), `?debug=1` prints the game's internal log to the browser console,
+  `?fps=1` shows the frame rate and how long drawing a frame takes (top left corner).
 
 ## How the port works
 
